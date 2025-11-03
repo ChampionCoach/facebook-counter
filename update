@@ -1,0 +1,312 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Follower Goal Tracker</title>
+    <!-- Load Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+        tailwind.config = {
+            theme: {
+                extend: {
+                    colors: {
+                        'facebook-blue': '#1877F2',
+                        'success-green': '#3B82F6',
+                    },
+                    fontFamily: {
+                        sans: ['Inter', 'sans-serif'],
+                    },
+                }
+            }
+        }
+    </script>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;600;800&display=swap');
+        body {
+            background-color: #f7f9fb;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            min-height: 100vh;
+            padding: 1rem;
+            font-family: 'Inter', sans-serif;
+        }
+    </style>
+</head>
+<body class="bg-gray-100">
+
+    <div id="app-container" class="w-full max-w-sm mx-auto">
+        <!-- Loading State -->
+        <div id="loading" class="text-center p-8 bg-white rounded-xl shadow-2xl transition duration-500">
+            <svg class="animate-spin h-8 w-8 text-facebook-blue mx-auto" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+            </svg>
+            <p class="mt-4 text-sm text-gray-600">Loading progress...</p>
+        </div>
+
+        <!-- Follower Counter Card -->
+        <div id="counter-card" class="hidden bg-white rounded-xl shadow-2xl overflow-hidden transform transition duration-500 ease-in-out hover:shadow-3xl">
+            <div class="p-6 sm:p-8 bg-gradient-to-br from-facebook-blue to-blue-500 text-white">
+                <h1 class="text-2xl font-bold mb-1">Follower Goal Tracker</h1>
+                <p class="text-sm opacity-90">Help us hit 500 followers for the big announcement!</p>
+            </div>
+            
+            <div class="p-6 sm:p-8">
+                <!-- Current Count Display -->
+                <div class="flex justify-between items-end mb-4">
+                    <div class="text-3xl sm:text-4xl font-extrabold text-gray-900 leading-none">
+                        <span id="current-count">0</span>
+                    </div>
+                    <div class="text-lg sm:text-xl font-medium text-gray-500">
+                        / <span id="goal-count">500</span>
+                    </div>
+                </div>
+
+                <!-- Progress Bar -->
+                <div class="w-full bg-gray-200 rounded-full h-3 mb-6 relative">
+                    <div id="progress-bar" class="h-3 rounded-full bg-success-green transition-all duration-700 ease-out" style="width: 0%"></div>
+                    <div id="progress-label" class="absolute inset-0 flex items-center justify-center text-xs font-semibold text-white">0%</div>
+                </div>
+
+                <!-- Goal Reached Message -->
+                <div id="goal-message" class="hidden text-center p-4 bg-yellow-50 border border-yellow-300 text-yellow-800 rounded-lg mb-4">
+                    <p class="font-bold">ð GOAL REACHED! ð</p>
+                    <p class="text-sm mt-1">Thank you! Time for the challenge!</p>
+                </div>
+
+                <!-- Manual Update Section -->
+                <div class="mt-6 border-t pt-4">
+                    <label for="new-count-input" class="block text-sm font-medium text-gray-700 mb-2">Manually Update Count:</label>
+                    <div class="flex space-x-2">
+                        <input type="number" id="new-count-input" placeholder="Enter new follower count" 
+                               class="flex-grow p-2 border border-gray-300 rounded-lg focus:ring-facebook-blue focus:border-facebook-blue text-sm"
+                               min="0" required>
+                        <button id="update-button" class="bg-facebook-blue text-white font-semibold py-2 px-4 rounded-lg hover:bg-blue-600 transition duration-150 shadow-md">
+                            Save
+                        </button>
+                    </div>
+                    <p id="error-message" class="text-red-500 text-xs mt-1 hidden">Please enter a valid number.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Firebase SDKs -->
+    <script type="module">
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
+        import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+        import { getFirestore, doc, setDoc, onSnapshot, getDoc, collection, setLogLevel } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+
+        // --- GLOBAL VARIABLES ---
+        const GOAL_COUNT = 500;
+        const COUNT_COLLECTION = 'facebook_counter';
+        const COUNT_DOCUMENT_ID = 'main_document';
+
+        // Get environment variables
+        const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
+        const firebaseConfig = JSON.parse(typeof __firebase_config !== 'undefined' ? __firebase_config : '{}');
+        const initialAuthToken = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : undefined;
+
+        // --- FIREBASE INITIALIZATION ---
+        let db, auth, userId;
+        const appContainer = document.getElementById('app-container');
+        const loadingDiv = document.getElementById('loading');
+        const counterCard = document.getElementById('counter-card');
+        setLogLevel('Debug'); // Enable Firestore logging
+
+        // Utility to handle exponential backoff for API calls (though not for client-side Firebase)
+        function base64ToArrayBuffer(base64) {
+            const binaryString = atob(base64);
+            const len = binaryString.length;
+            const bytes = new Uint8Array(len);
+            for (let i = 0; i < len; i++) {
+                bytes[i] = binaryString.charCodeAt(i);
+            }
+            return bytes.buffer;
+        }
+        function pcmToWav(pcm16, sampleRate = 24000) {
+            const numChannels = 1;
+            const bytesPerSample = 2; // 16-bit PCM
+            const byteRate = numChannels * sampleRate * bytesPerSample;
+            const blockAlign = numChannels * bytesPerSample;
+            
+            const buffer = new ArrayBuffer(44 + pcm16.length * bytesPerSample);
+            const view = new DataView(buffer);
+            let offset = 0;
+
+            // Write RIFF header
+            function writeString(s) {
+                for (let i = 0; i < s.length; i++) {
+                    view.setUint8(offset + i, s.charCodeAt(i));
+                }
+                offset += s.length;
+            }
+            function writeUint32(i) {
+                view.setUint32(offset, i, true);
+                offset += 4;
+            }
+            function writeUint16(i) {
+                view.setUint16(offset, i, true);
+                offset += 2;
+            }
+
+            writeString('RIFF');
+            writeUint32(36 + pcm16.length * bytesPerSample);
+            writeString('WAVE');
+            writeString('fmt ');
+            writeUint32(16); // Sub-chunk 1 size (16 for PCM)
+            writeUint16(1);  // Audio format (1 for PCM)
+            writeUint16(numChannels);
+            writeUint32(sampleRate);
+            writeUint32(byteRate);
+            writeUint16(blockAlign);
+            writeUint16(bytesPerSample * 8); // Bits per sample (16)
+            writeString('data');
+            writeUint32(pcm16.length * bytesPerSample);
+
+            // Write PCM data
+            for (let i = 0; i < pcm16.length; i++) {
+                view.setInt16(offset, pcm16[i], true);
+                offset += 2;
+            }
+
+            return new Blob([buffer], { type: 'audio/wav' });
+        }
+        
+        async function initFirebase() {
+            try {
+                const app = initializeApp(firebaseConfig);
+                db = getFirestore(app);
+                auth = getAuth(app);
+
+                // Sign in using custom token or anonymously
+                if (initialAuthToken) {
+                    await signInWithCustomToken(auth, initialAuthToken);
+                } else {
+                    await signInAnonymously(auth);
+                }
+
+                userId = auth.currentUser?.uid || crypto.randomUUID();
+                
+                // Once authenticated, start listening for data
+                listenForCountChanges();
+
+            } catch (error) {
+                console.error("Firebase initialization or authentication failed:", error);
+                loadingDiv.innerHTML = '<p class="text-red-600">Error loading application.</p>';
+            }
+        }
+
+        // --- UI RENDERING LOGIC ---
+        function updateUI(count) {
+            const currentCountEl = document.getElementById('current-count');
+            const progressBar = document.getElementById('progress-bar');
+            const progressLabel = document.getElementById('progress-label');
+            const goalMessage = document.getElementById('goal-message');
+
+            const percentage = Math.min(100, (count / GOAL_COUNT) * 100);
+            const roundedPercentage = Math.round(percentage);
+
+            currentCountEl.textContent = count.toLocaleString();
+            progressBar.style.width = `${percentage}%`;
+            progressLabel.textContent = `${roundedPercentage}%`;
+
+            if (count >= GOAL_COUNT) {
+                progressBar.classList.add('bg-yellow-500');
+                progressBar.classList.remove('bg-success-green');
+                goalMessage.classList.remove('hidden');
+            } else {
+                progressBar.classList.add('bg-success-green');
+                progressBar.classList.remove('bg-yellow-500');
+                goalMessage.classList.add('hidden');
+            }
+            
+            // Show the main card once data is loaded/initialized
+            loadingDiv.classList.add('hidden');
+            counterCard.classList.remove('hidden');
+        }
+
+        // --- FIRESTORE OPERATIONS ---
+        function getFollowerDocRef() {
+            // Path: /artifacts/{appId}/users/{userId}/facebook_counter/main_document
+            const userDocPath = `/artifacts/${appId}/users/${userId}`;
+            const counterCollection = collection(db, userDocPath, COUNT_COLLECTION);
+            return doc(counterCollection, COUNT_DOCUMENT_ID);
+        }
+
+        async function saveCount(newCount) {
+            if (newCount < 0) return; // Basic validation
+
+            const docRef = getFollowerDocRef();
+            try {
+                // Use setDoc with merge:true to create or update the document
+                await setDoc(docRef, { count: newCount, timestamp: Date.now() }, { merge: true });
+                return true;
+            } catch (e) {
+                console.error("Error writing document: ", e);
+                return false;
+            }
+        }
+
+        function listenForCountChanges() {
+            const docRef = getFollowerDocRef();
+            
+            onSnapshot(docRef, (docSnap) => {
+                if (docSnap.exists()) {
+                    const data = docSnap.data();
+                    const currentCount = data.count || 0;
+                    updateUI(currentCount);
+                } else {
+                    // Document doesn't exist, initialize with 0
+                    updateUI(0);
+                    // Optionally set initial document if needed, but onSnapshot will trigger on first read
+                    console.log("No initial data found, defaulting to 0.");
+                }
+            }, (error) => {
+                console.error("Error listening to document: ", error);
+                loadingDiv.innerHTML = '<p class="text-red-600">Connection Error. Data not live.</p>';
+                counterCard.classList.remove('hidden');
+                loadingDiv.classList.add('hidden');
+            });
+        }
+
+        // --- EVENT HANDLERS ---
+        document.getElementById('goal-count').textContent = GOAL_COUNT;
+        
+        document.getElementById('update-button').addEventListener('click', async () => {
+            const inputEl = document.getElementById('new-count-input');
+            const errorMessageEl = document.getElementById('error-message');
+            const newCount = parseInt(inputEl.value, 10);
+
+            if (isNaN(newCount) || newCount < 0) {
+                errorMessageEl.classList.remove('hidden');
+                return;
+            }
+
+            errorMessageEl.classList.add('hidden');
+            
+            // Disable button while saving
+            const updateButton = document.getElementById('update-button');
+            updateButton.disabled = true;
+            updateButton.textContent = 'Saving...';
+
+            const success = await saveCount(newCount);
+            
+            updateButton.textContent = 'Save';
+            updateButton.disabled = false;
+            
+            if (success) {
+                inputEl.value = ''; // Clear input on successful save
+            } else {
+                errorMessageEl.textContent = 'Failed to save count. Check console.';
+                errorMessageEl.classList.remove('hidden');
+            }
+        });
+
+        // Initialize the application
+        initFirebase();
+    </script>
+</body>
+</html>
